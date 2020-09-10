@@ -33,36 +33,130 @@ export function UploadFieldPlugin(builder, { uploadFieldDefinitions }) {
 
     addType(GraphQLUpload);
 
+      // override the internal type
+    const uploadType = build.pgIntrospectionResultsByKind.type.find(typ=>typ.name==='upload' && typ.namespaceName==='public');
+    if (uploadType) {
+      build.pgRegisterGqlTypeByTypeId(
+        uploadType.id,
+        () => build.graphql.GraphQLString
+      );
+    }
+
     return _;
   });
 
+  // builder.hook(
+  //   'GraphQLInputObjectType:fields:field',
+  //   (field, build, context) => {
+  //     const { getTypeByName } = build;
+  //     const {
+  //       scope: { pgIntrospection: table, pgFieldIntrospection: attr }
+  //     } = context;
+
+  //     if (!table || !attr) {
+  //       return field;
+  //     }
+
+  //     const foundUploadFieldDefinition =
+  //       uploadFieldDefinitions.filter((def) =>
+  //         findMatchingDefinitions(def, table, attr)
+  //       ).length === 1;
+
+  //     if (!foundUploadFieldDefinition) {
+  //       return field;
+  //     }
+
+  //     // Replace existing GraphQL type with `Upload` type
+  //     return Object.assign({}, field, {
+  //       type: getTypeByName('Upload')
+  //     });
+  //   }
+  // );
+
   builder.hook(
-    'GraphQLInputObjectType:fields:field',
-    (field, build, context) => {
-      const { getTypeByName } = build;
-      const {
-        scope: { pgIntrospection: table, pgFieldIntrospection: attr }
-      } = context;
-
-      if (!table || !attr) {
-        return field;
-      }
-
-      const foundUploadFieldDefinition =
-        uploadFieldDefinitions.filter((def) =>
-          findMatchingDefinitions(def, table, attr)
-        ).length === 1;
-
-      if (!foundUploadFieldDefinition) {
-        return field;
-      }
-
-      // Replace existing GraphQL type with `Upload` type
-      return Object.assign({}, field, {
-        type: getTypeByName('Upload')
-      });
+    'inflection',
+    (inflection, build, context) => {
+      return build.extend(inflection, {
+        // NO ARROW FUNCTIONS HERE
+        uploadColumn (attr) {
+          return this.column(attr) + 'Upload';
+        }
+      })
     }
-  );
+  )
+
+  // GraphQLFieldConfigMap (now it inputfieldconfigmap)
+  builder.hook('GraphQLInputObjectType:fields', (fields, build, context) => {
+    const {
+      scope: { isPgRowType, pgIntrospection: table },
+      fieldWithHooks,
+    } = context;
+
+    if (
+      !(isPgRowType) ||
+      !table ||
+      table.kind !== "class"
+    ) {
+      return fields;
+    }
+
+    return build.extend(
+      fields,
+      table.attributes.reduce((memo, attr) => {
+        // PERFORMANCE: These used to be .filter(...) calls
+        if (!build.pgColumnFilter(attr, build, context)) return memo;
+        const action = context.scope.isPgBaseInput
+          ? "base"
+          : context.scope.isPgPatch
+          ? "update"
+          : "create";
+        if (build.pgOmit(attr, action)) return memo;
+        if (attr.identity === "a") return memo;
+        
+        if (!attr.tags.upload) return memo;
+
+        const fieldName = build.inflection.uploadColumn(attr);
+
+        if (memo[fieldName]) {
+          throw new Error(
+            `Two columns produce the same GraphQL field name '${fieldName}' on class '${table.namespaceName}.${table.name}'; one of them is '${attr.name}'`
+          );
+        }
+        memo = build.extend(
+          memo,
+          {
+            [fieldName]: context.fieldWithHooks(
+              fieldName,
+              {
+                description: attr.description,
+                type: build.getTypeByName('Upload')
+              },
+              { pgFieldIntrospection: attr, isPgUploadField: true }
+            )
+          },
+          `Adding field for ${build.describePgEntity(
+            attr
+          )}. You can rename this field with a 'Smart Comment':\n\n  ${build.sqlCommentByAddingTags(
+            attr,
+            {
+              name: "newNameHere",
+            }
+          )}`
+        );
+        return memo;
+      }, {}),
+      `Adding columns to '${build.describePgEntity(table)}'`
+    );
+  }
+);
+
+  //     return {
+  //       ...fields,
+  //       hello: {
+  //         type: build.graphql.GraphQLString // comes from 'graphql'
+  //       }
+  //     };
+  // });
 
   builder.hook('GraphQLObjectType:fields:field', (field, build, context) => {
     const {
@@ -81,10 +175,11 @@ export function UploadFieldPlugin(builder, { uploadFieldDefinitions }) {
     const defaultResolver = (obj) => obj[fieldName];
 
     // Extract the old resolver from `field`
-    const { resolve: oldResolve = defaultResolver, ...rest } = field;
+    const { resolve: oldResolve = defaultResolver, ...rest } = field; // GraphQLFieldConfig
 
     const tags = {};
     const types = {};
+    const originals = {};
 
     const uploadResolversByFieldName = introspectionResultsByKind.attribute
       .filter((attr) => attr.classId === table.id)
@@ -97,9 +192,11 @@ export function UploadFieldPlugin(builder, { uploadFieldDefinitions }) {
         }
         if (defs.length === 1) {
           const fieldName = inflection.column(attr);
-          memo[fieldName] = defs[0].resolve;
-          tags[fieldName] = attr.tags;
-          types[fieldName] = attr.type.name;
+          const uploadFieldName = inflection.uploadColumn(attr);
+          memo[uploadFieldName] = defs[0].resolve;
+          tags[uploadFieldName] = attr.tags;
+          types[uploadFieldName] = attr.type.name;
+          originals[uploadFieldName] = fieldName;
         }
         return memo;
       }, {});
@@ -117,7 +214,7 @@ export function UploadFieldPlugin(builder, { uploadFieldDefinitions }) {
               if (uploadResolversByFieldName[key]) {
                 const upload = await obj[key];
                 // eslint-disable-next-line require-atomic-updates
-                obj[key] = await uploadResolversByFieldName[key](
+                obj[originals[key]] = await uploadResolversByFieldName[key](
                   upload,
                   args,
                   context,
