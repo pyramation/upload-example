@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const express = require("express");
 const { postgraphile } = require("postgraphile");
-const PostGraphileUploadFieldPlugin = require("postgraphile-plugin-upload-field");
+const { UploadFieldPlugin } = require("./plugins/postgraphile-plugin-upload-field");
 const { graphqlUploadExpress } = require("graphql-upload");
 
 const app = express();
@@ -19,11 +19,13 @@ app.use(
   postgraphile("postgres://localhost:5432/upload_example", "public", {
     graphiql: true,
     enableCors: true,
-    appendPlugins: [PostGraphileUploadFieldPlugin],
+    appendPlugins: [UploadFieldPlugin],
     graphileBuildOptions: {
       uploadFieldDefinitions: [
         {
-          match: ({ column }) => column === "header_image_file",
+          match: (args) => {
+            return args.tags.upload;
+          },
           resolve: resolveUpload,
         },
       ],
