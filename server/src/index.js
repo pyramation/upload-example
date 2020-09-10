@@ -7,7 +7,7 @@ const { graphqlUploadExpress } = require("graphql-upload");
 
 const app = express();
 
-const UPLOAD_DIR_NAME = "uploads";
+const UPLOAD_DIR_NAME = 'uploads';
 
 // Serve uploads as static resources
 app.use(`/${UPLOAD_DIR_NAME}`, express.static(path.resolve(UPLOAD_DIR_NAME)));
@@ -51,7 +51,7 @@ function saveLocal({ stream, filename }) {
   const timestamp = new Date().toISOString().replace(/\D/g, "");
   const id = `${timestamp}_${filename}`;
   const filepath = path.join(UPLOAD_DIR_NAME, id);
-  const fsPath = path.join(process.cwd(), filepath);
+  const fsPath = path.join(__dirname, filepath);
   return new Promise((resolve, reject) =>
     stream
       .on("error", error => {
